@@ -8,15 +8,16 @@ import {
   Connection,
   PublicKey,
   SystemProgram,
-  TransactionInstruction,
   Transaction,
   sendAndConfirmTransaction,
+  Keypair,
 } from '@solana/web3.js';
 import fs from 'mz/fs';
 import {Client as WsClient} from 'rpc-websockets';
 // @ts-ignore
 import command_line_parser from 'command-line-parser';
-import { createApprove, createMultiApprove, createProposal, PropositionKind, PropositionType,} from './library';
+import {PropositionKind, Proposition} from './library';
+import * as library from './library';
 
 import util from 'util';
 import {
@@ -51,9 +52,10 @@ async function loadProgramId(connection: Connection): Promise<PublicKey> {
 /**
  * Load the BPF program if not already loaded
  */
-async function deployProgram(
+async function deployProgramCommon(
   connection: Connection,
   commandArgs: any,
+  isAsync: boolean,
 ): Promise<PublicKey> {
   if (commandArgs.authority == null) {
     throw 'missing authority';
@@ -83,13 +85,23 @@ async function deployProgram(
 
   // Load the program
   const programAccount = new Account();
-  await Loader.deploy(
-    connection,
-    authorityAccount,
-    programAccount,
-    authorityAccount,
-    data,
-  );
+  if (isAsync) {
+    await Loader.deployAsync(
+      connection,
+      authorityAccount,
+      programAccount,
+      authorityAccount,
+      data,
+    );
+  } else {
+    await Loader.deploy(
+      connection,
+      authorityAccount,
+      programAccount,
+      authorityAccount,
+      data,
+    );
+  }
   const programId = programAccount.publicKey;
   console.log('Program deployed to account', programId.toBase58());
 
@@ -100,6 +112,26 @@ async function deployProgram(
   });
 
   return programId;
+}
+
+/**
+ * Load the BPF program if not already loaded
+ */
+async function deployProgram(
+  connection: Connection,
+  commandArgs: any,
+): Promise<PublicKey> {
+  return await deployProgramCommon(connection, commandArgs, false);
+}
+
+/**
+ * Load the BPF program if not already loaded
+ */
+async function deployProgramAsync(
+  connection: Connection,
+  commandArgs: any,
+): Promise<PublicKey> {
+  return await deployProgramCommon(connection, commandArgs, true);
 }
 
 async function init(context: Context): Promise<void> {
@@ -235,76 +267,79 @@ async function propose(context: Context): Promise<void> {
   const protectedAccount = await multisig.protectedAccountKey(groupAccount);
   console.log('protected account:', protectedAccount.toBase58());
 
-  let proposedInstruction: TransactionInstruction;
   if (commandArgs._args.length < 1) {
     throw 'missing proposed action';
   }
   const proposedAction = commandArgs._args.shift();
-  let prop: PropositionType;
+  let proposition: Proposition;
   switch (proposedAction) {
     case 'create':
       if (commandArgs.lamports == null) {
         throw 'missing lamports';
       }
-      prop= {
+      proposition = {
         kind: PropositionKind.Create,
         lamports: parseInt(commandArgs.lamports),
-      }
+      };
       break;
-    case 'transfer':
+    case 'transfer': {
       if (commandArgs.destination == null) {
         throw 'missing destination';
       }
       if (commandArgs.lamports == null) {
         throw 'missing lamports';
       }
-      prop= {
+      proposition = {
         kind: PropositionKind.Transfer,
         destination: new PublicKey(commandArgs.destination),
         amount: parseInt(commandArgs.lamports),
-      }
+      };
       break;
-    case 'upgrade':
+    }
+    case 'upgrade': {
       if (commandArgs.buffer == null) {
         throw 'missing buffer';
       }
       if (commandArgs.program == null) {
         throw 'missing program';
       }
-      const programUpgrade = new PublicKey(commandArgs.program)
-      const bufferUpgrade = new PublicKey(commandArgs.buffer)
-      prop= {
+      const programUpgrade = new PublicKey(commandArgs.program);
+      const bufferUpgrade = new PublicKey(commandArgs.buffer);
+      proposition = {
         kind: PropositionKind.Upgrade,
         buffer: bufferUpgrade,
-        program: programUpgrade
-      }
+        program: programUpgrade,
+      };
       break;
-    case 'upgrade-multisig':
+    }
+    case 'upgrade-multisig': {
       if (commandArgs.buffer == null) {
         throw 'missing buffer';
       }
-      const bufferUpgradeMultisig = new PublicKey(commandArgs.buffer)
-      prop= {
+      const bufferUpgradeMultisig = new PublicKey(commandArgs.buffer);
+      proposition = {
         kind: PropositionKind.UpgradeMultisig,
         buffer: bufferUpgradeMultisig,
-      }
+      };
       break;
-    case 'delegate-upgrade-authority':
+    }
+    case 'delegate-upgrade-authority': {
       if (commandArgs.target == null) {
-        throw 'missing target to set authority of'
+        throw 'missing target to set authority of';
       }
       if (commandArgs.new == null) {
-        throw 'missing new authority'
+        throw 'missing new authority';
       }
       const targetDelegateUpgrade = new PublicKey(commandArgs.target);
       const newDelegateUpgrade = new PublicKey(commandArgs.new);
-        prop = {
-          kind: PropositionKind.DelegateUpgradeAuthority,
-          target: targetDelegateUpgrade,
-          newAuthority: newDelegateUpgrade
-        }
+      proposition = {
+        kind: PropositionKind.DelegateUpgradeAuthority,
+        target: targetDelegateUpgrade,
+        newAuthority: newDelegateUpgrade,
+      };
       break;
-    case 'mint-to':
+    }
+    case 'mint-to': {
       if (commandArgs.mint == null) {
         throw 'missing mint pubkey';
       }
@@ -314,63 +349,67 @@ async function propose(context: Context): Promise<void> {
       if (commandArgs.amount == null) {
         throw 'missing amount';
       }
-      const mintMintoTo = new PublicKey(commandArgs.mint)
-      const destMintTo = new PublicKey(commandArgs.destination)
-      const amountMintTo = parseInt(commandArgs.amount)
-        prop = {
-          kind: PropositionKind.MintTo,
-          mint: mintMintoTo,
-          destination: destMintTo,
-          amount: amountMintTo
-        }
+      const mintMintoTo = new PublicKey(commandArgs.mint);
+      const destMintTo = new PublicKey(commandArgs.destination);
+      const amountMintTo = parseInt(commandArgs.amount);
+      proposition = {
+        kind: PropositionKind.MintTo,
+        mint: mintMintoTo,
+        destination: destMintTo,
+        amount: amountMintTo,
+      };
       break;
+    }
     // Delegates a mint authority from the protected account to an other account.
-    case 'delegate-mint-authority':
+    case 'delegate-mint-authority': {
       if (commandArgs.target == null) {
-        throw 'missing target to set authority of'
+        throw 'missing target to set authority of';
       }
       if (commandArgs.new == null) {
-        throw 'missing new authority'
+        throw 'missing new authority';
       }
       const targetDelegateMint = new PublicKey(commandArgs.target);
       const newDelegateMint = new PublicKey(commandArgs.new);
-        prop = {
-          kind: PropositionKind.DelegateMintAuthority,
-          target: targetDelegateMint,
-          newAuthority: newDelegateMint,
-        }
+      proposition = {
+        kind: PropositionKind.DelegateMintAuthority,
+        target: targetDelegateMint,
+        newAuthority: newDelegateMint,
+      };
       break;
+    }
     // Delegates a token account authority from the protected account to an other account.
-    case 'delegate-token-account-authority':
+    case 'delegate-token-account-authority': {
       if (commandArgs.target == null) {
-        throw 'missing target to set authority of'
+        throw 'missing target to set authority of';
       }
       if (commandArgs.new == null) {
-        throw 'missing new authority'
+        throw 'missing new authority';
       }
       const targetDelegateAccount = new PublicKey(commandArgs.target);
       const newDelegateAccount = new PublicKey(commandArgs.new);
-        prop = {
-          kind: PropositionKind.DelegateTokenAuthority,
-          target: targetDelegateAccount,
-          newAuthority: newDelegateAccount,
-        }
+      proposition = {
+        kind: PropositionKind.DelegateTokenAuthority,
+        target: targetDelegateAccount,
+        newAuthority: newDelegateAccount,
+      };
       break;
-    case 'create-token-account':
+    }
+    case 'create-token-account': {
       if (commandArgs.mint == null) {
         throw 'missing mint pubkey';
       }
       if (commandArgs.seed == null) {
         throw 'missing seed for new account';
       }
-      const mintCreateToken = new PublicKey(commandArgs.mint)
-        prop = {
-          kind: PropositionKind.CreateTokenAccount,
-          mint: mintCreateToken,
-          seed: commandArgs.seed,
-        }
+      const mintCreateToken = new PublicKey(commandArgs.mint);
+      proposition = {
+        kind: PropositionKind.CreateTokenAccount,
+        mint: mintCreateToken,
+        seed: commandArgs.seed,
+      };
       break;
-    case 'transfer-token':
+    }
+    case 'transfer-token': {
       if (commandArgs.amount == null) {
         throw 'missing amount';
       }
@@ -380,41 +419,33 @@ async function propose(context: Context): Promise<void> {
       if (commandArgs.destination == null) {
         throw 'missing destination';
       }
-      const sourceTransferToken = new PublicKey(commandArgs.source)
-      const destinationTransferToken = new PublicKey(commandArgs.destination)
-      const amountTransferToken = parseInt(commandArgs.amount)
-        prop = {
-          kind: PropositionKind.TransferToken,
-          source: sourceTransferToken,
-          destination: destinationTransferToken,
-          amount: amountTransferToken
-        }
+      const sourceTransferToken = new PublicKey(commandArgs.source);
+      const destinationTransferToken = new PublicKey(commandArgs.destination);
+      const amountTransferToken = parseInt(commandArgs.amount);
+      proposition = {
+        kind: PropositionKind.TransferToken,
+        source: sourceTransferToken,
+        destination: destinationTransferToken,
+        amount: amountTransferToken,
+      };
       break;
+    }
     default:
       throw 'unknown proposed action';
   }
 
-  await createProposal(connection, multisig, groupAccount, protectedAccount,
-    signerAccount, prop)
-}
-
-async function multiApprove(context: Context): Promise<void> {
-  const {commandArgs, connection, multisig} = context;
-  if (commandArgs.proposals == null) {
-    throw 'missing proposal';
-  }
-  if (commandArgs.key == null) {
-    throw 'missing key';
-  }
-  const signerAccount = new Account(
-    JSON.parse(await fs.readFile(commandArgs.key, 'utf8')),
+  const proposalKey = await library.propose(
+    connection,
+    multisig,
+    groupAccount,
+    protectedAccount,
+    signerAccount,
+    proposition,
   );
-  console.log('signing with account', signerAccount.publicKey.toBase58());
-
-  const proposals = commandArgs.proposals.split(',').map(function (item: any) {
-    return new PublicKey(item);
-  });
-  await createMultiApprove(connection, multisig, signerAccount, proposals)
+  console.log(
+    'created a proposal account with public key:',
+    proposalKey.toBase58(),
+  );
 }
 
 async function approve(context: Context): Promise<void> {
@@ -429,10 +460,35 @@ async function approve(context: Context): Promise<void> {
   const signerAccount = new Account(
     JSON.parse(await fs.readFile(commandArgs.key, 'utf8')),
   );
-  createApprove(connection, multisig, signerAccount, proposalAccount)
+  await library.approve(connection, multisig, signerAccount, proposalAccount);
 }
 
-async function view_proposal(context: Context): Promise<void> {
+async function closeProposal(context: Context): Promise<void> {
+  const {commandArgs, connection, multisig} = context;
+  if (commandArgs.proposal == null) {
+    throw 'missing proposal';
+  }
+  if (commandArgs.destination == null) {
+    throw 'missing destination to transfer lamports to';
+  }
+  const proposalAccount = new PublicKey(commandArgs.proposal);
+  const destinationKey = new PublicKey(commandArgs.destination);
+  if (commandArgs.key == null) {
+    throw 'missing key';
+  }
+  const signerAccount = new Account(
+    JSON.parse(await fs.readFile(commandArgs.key, 'utf8')),
+  );
+  await library.closeProposal(
+    connection,
+    multisig,
+    signerAccount,
+    proposalAccount,
+    destinationKey,
+  );
+}
+
+async function viewProposal(context: Context): Promise<void> {
   const {commandArgs, connection, multisig} = context;
   if (commandArgs.proposal == null) {
     throw 'missing proposal';
@@ -450,22 +506,24 @@ async function view_proposal(context: Context): Promise<void> {
   console.log('protected account:', protectedAccount.toBase58());
   console.log('current weight:', proposalData.state.current_weight);
   console.log('');
-  console.log('proposed instruction:');
-  console.log(
-    '  program: ',
-    new PublicKey(proposalData.config.instruction.program_id).toBase58(),
-  );
-  console.log('  accounts:');
-  for (const account of proposalData.config.instruction.accounts) {
-    console.log(
-      '    ',
-      new PublicKey(account.pubkey).toBase58(),
-      account.is_signer ? '[signer]' : '',
-      account.is_writable ? '[writable]' : '',
-    );
+  console.log('proposed instructions:');
+  console.group();
+  for (const instruction of proposalData.config.instructions) {
+    console.log('program: ', new PublicKey(instruction.program_id).toBase58());
+    console.log('accounts:');
+    console.group();
+    for (const account of instruction.accounts) {
+      console.log(
+        new PublicKey(account.pubkey).toBase58(),
+        account.is_signer ? '[signer]' : '',
+        account.is_writable ? '[writable]' : '',
+      );
+    }
+    console.groupEnd();
+    console.log('data:', instruction.data);
+    console.log('');
   }
-  console.log('  data:', proposalData.config.instruction.data);
-  console.log('');
+  console.groupEnd();
 
   const groupAccountInfo = await connection.getAccountInfo(groupAccount);
   if (groupAccountInfo === null) {
@@ -533,6 +591,43 @@ async function listen(context: Context): Promise<void> {
   await new Promise(_resolve => null);
 }
 
+async function viewGroups(context: Context) {
+  const {commandArgs, connection, multisig} = context;
+  const keyPair = Keypair.fromSecretKey(
+    Buffer.from(JSON.parse(await fs.readFile(commandArgs.key, 'utf-8'))),
+  );
+  const groups = await library.getGroups(connection, multisig, keyPair);
+  console.log('participating in following groups:');
+  console.group();
+  for (const {pubkey} of groups) {
+    console.log('pubkey:', pubkey.toBase58());
+    console.log(
+      'protected pubkey:',
+      (await multisig.protectedAccountKey(pubkey)).toBase58(),
+    );
+  }
+  console.groupEnd();
+}
+
+async function viewProposals(context: Context) {
+  const {commandArgs, connection, multisig} = context;
+  if (commandArgs.group == null) {
+    throw 'specify group';
+  }
+  const groupAccount = new PublicKey(commandArgs.group);
+  const proposal = await library.getProposals(
+    connection,
+    multisig,
+    groupAccount,
+  );
+  console.log('this group has following open proposals:');
+  console.group();
+  for (const {pubkey} of proposal) {
+    console.log('pubkey:', pubkey.toBase58());
+  }
+  console.groupEnd();
+}
+
 async function main() {
   // Establish connection to the cluster
   const connection = new Connection(url, 'singleGossip');
@@ -550,6 +645,10 @@ async function main() {
     await deployProgram(connection, commandArgs);
     return;
   }
+  if (action == 'deploy-async') {
+    await deployProgramAsync(connection, commandArgs);
+    return;
+  }
 
   const programId = await loadProgramId(connection);
   const multisig = new MultiSig(programId);
@@ -559,14 +658,18 @@ async function main() {
     await init(context);
   } else if (action == 'propose') {
     await propose(context);
-  } else if (action == 'multi-approve') {
-    await multiApprove(context);
   } else if (action == 'approve') {
     await approve(context);
   } else if (action == 'view-proposal') {
-    await view_proposal(context);
+    await viewProposal(context);
   } else if (action == 'listen') {
     await listen(context);
+  } else if (action == 'view-groups') {
+    await viewGroups(context);
+  } else if (action == 'view-proposals') {
+    await viewProposals(context);
+  } else if (action == 'close-proposal') {
+    await closeProposal(context);
   } else if (action == 'tmp') {
     const info = await connection.getConfirmedBlock(5595);
     console.log(

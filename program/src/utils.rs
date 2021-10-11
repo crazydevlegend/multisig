@@ -29,7 +29,7 @@ pub fn write_serialized_data(
         return Err(ProgramError::AccountDataTooSmall.into());
     }
     buf[0] = account_type.into();
-    buf[1..data.len() + 1].copy_from_slice(&data);
+    buf[1..data.len() + 1].copy_from_slice(data);
     for x in &mut buf[data.len() + 1..] {
         *x = 0; // TODO: use `fill()` (need Rust 1.50)
     }

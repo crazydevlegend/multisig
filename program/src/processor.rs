@@ -1,6 +1,7 @@
 use crate::error::Error;
 use std::convert::TryInto;
 
+use solana_program::msg;
 use solana_program::program::invoke_signed;
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
@@ -36,6 +37,7 @@ impl Processor<'_, '_> {
             MultiSigInstruction::Init(instruction) => self.initialize(instruction),
             MultiSigInstruction::Propose(data) => self.propose(data),
             MultiSigInstruction::Approve(_) => self.approve(),
+            MultiSigInstruction::CloseProposal(_) => self.close_proposal(),
         }
     }
 
@@ -150,9 +152,9 @@ impl Processor<'_, '_> {
         }
 
         let group_account_info = next_account_info(accounts_iter)?;
-        let group_data = check_and_read_group_data(&group_account_info, program_id)?;
+        let group_data = check_and_read_group_data(group_account_info, program_id)?;
 
-        let (signer_index, signer_weight) = group_data.weight(&signer_account_info.key)?;
+        let (signer_index, signer_weight) = group_data.weight(signer_account_info.key)?;
 
         let mut state = ProposalState::new();
         state.add_approval(signer_index, signer_weight)?;
@@ -162,17 +164,21 @@ impl Processor<'_, '_> {
                 program_id,
             );
 
-            invoke_signed(
-                &data.instruction.try_into()?,
-                accounts,
-                &[&[pda_tag::PROTECTED, group_account_info.key.as_ref(), &[seed]]],
-            )?;
+            for instruction in data.instructions {
+                invoke_signed(
+                    &instruction.try_into()?,
+                    accounts,
+                    &[&[pda_tag::PROTECTED, group_account_info.key.as_ref(), &[seed]]],
+                )?;
+            }
         } else {
             let proposal_account_info = next_account_info(accounts_iter)?;
 
             let config = ProposalConfig {
                 group: *group_account_info.key,
-                instruction: data.instruction,
+                instructions: data.instructions,
+                author: *signer_account_info.key,
+                salt: data.salt
             };
             // Note: This is proposed instruction, not proposal data
             let serialized_config = config.try_to_vec().map_err(Error::Serialize)?;
@@ -228,8 +234,8 @@ impl Processor<'_, '_> {
         }
 
         let group_account_info = next_account_info(accounts_iter)?;
-        let group_data = check_and_read_group_data(&group_account_info, program_id)?;
-        let (signer_index, signer_weight) = group_data.weight(&signer_account_info.key)?;
+        let group_data = check_and_read_group_data(group_account_info, program_id)?;
+        let (signer_index, signer_weight) = group_data.weight(signer_account_info.key)?;
 
         let proposal_account_info = next_account_info(accounts_iter)?;
         let proposal_data = check_and_read_proposal_data(proposal_account_info, program_id)?;
@@ -237,6 +243,8 @@ impl Processor<'_, '_> {
             config: proposal_config,
             state: mut proposal_state,
         } = proposal_data;
+
+        let protected_account_info = next_account_info(accounts_iter)?;
 
         if proposal_config.group != *group_account_info.key {
             return Err(Error::InvalidGroupAccountKey);
@@ -249,15 +257,19 @@ impl Processor<'_, '_> {
                 program_id,
             );
 
-            invoke_signed(
-                &proposal_config.instruction.try_into()?,
-                accounts,
-                &[&[pda_tag::PROTECTED, group_account_info.key.as_ref(), &[seed]]],
-            )?;
+            for instruction in proposal_config.instructions {
+                invoke_signed(
+                    &instruction.try_into()?,
+                    accounts,
+                    &[&[pda_tag::PROTECTED, group_account_info.key.as_ref(), &[seed]]],
+                )?;
+            }
 
             for i in &mut **proposal_account_info.data.borrow_mut() {
                 *i = 0;
             }
+
+            transfer_lamports_from_proposal(proposal_account_info, protected_account_info);
         } else {
             let proposal_data = ProposalData {
                 config: proposal_config,
@@ -266,6 +278,36 @@ impl Processor<'_, '_> {
             write_account_data(proposal_account_info, AccountType::Proposal, &proposal_data)?;
         }
 
+        Ok(())
+    }
+
+    fn close_proposal(self) -> Result<(), Error> {
+        let Self {
+            accounts,
+            program_id,
+        } = self;
+        let accounts_iter = &mut accounts.iter();
+
+        let signer_account_info = next_account_info(accounts_iter)?;
+        if !signer_account_info.is_signer {
+            return Err(ProgramError::MissingRequiredSignature.into());
+        }
+
+        let proposal_account_info = next_account_info(accounts_iter)?;
+        let proposal_data = check_and_read_proposal_data(proposal_account_info, program_id)?;
+        let proposal_config = proposal_data.config;
+        let author = proposal_config.author;
+        if signer_account_info.key != &author {
+            return Err(ProgramError::MissingRequiredSignature.into());
+        }
+
+        let destination_account_info = next_account_info(accounts_iter)?;
+
+        for i in &mut **proposal_account_info.data.borrow_mut() {
+            *i = 0;
+        }
+
+        transfer_lamports_from_proposal(proposal_account_info, destination_account_info);
         Ok(())
     }
 }
@@ -311,4 +353,19 @@ pub fn check_and_read_proposal_data(
     }
 
     Ok(proposal_data)
+}
+
+/// Transfer lamports back to a destination account.
+/// This happens when a proposal is closed.
+fn transfer_lamports_from_proposal(
+    proposal_account_info: &AccountInfo,
+    destination_account_info: &AccountInfo,
+) {
+    let lamports = **proposal_account_info.lamports.borrow();
+    msg!(
+        "transferring {} lamports to close the proposal account",
+        lamports
+    );
+    **proposal_account_info.lamports.borrow_mut() = 0;
+    **destination_account_info.lamports.borrow_mut() += lamports;
 }

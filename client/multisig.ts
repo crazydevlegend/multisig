@@ -9,9 +9,12 @@ import {
   ApproveInstruction,
   InitInstruction,
   InstructionData,
+  CloseProposalInstruction,
+  ProposedInstruction,
 } from './schema';
 import {
   AccountInfo,
+  AccountMeta,
   PublicKey,
   SystemProgram,
   TransactionInstruction,
@@ -86,7 +89,7 @@ export class MultiSig {
     }
 
     checkAccountType(info.data, ACCOUNT_TYPE_TAG.group);
-    return deserialize(schema, GroupData, info.data.slice(1)) as GroupData;
+    return readVerifiedGroupAccountData(info);
   }
 
   readProposalAccountData(info: AccountInfo<Buffer>): ProposalData {
@@ -99,11 +102,7 @@ export class MultiSig {
     }
 
     checkAccountType(info.data, ACCOUNT_TYPE_TAG.proposal);
-    return deserialize(
-      schema,
-      ProposalData,
-      info.data.slice(1),
-    ) as ProposalData;
+    return readVerifiedProposalAccountData(info);
   }
 
   async init(
@@ -134,7 +133,9 @@ export class MultiSig {
   ): Promise<TransactionInstruction> {
     const proposalConfig = new ProposalConfig({
       group: Uint8Array.from(groupAccountKey.toBuffer()),
-      instruction: data.instruction,
+      instructions: data.instructions,
+      author: Uint8Array.from(signerAccountKey.toBuffer()),
+      salt: data.salt,
     });
     const proposalKey = await this.proposalAccountKey(proposalConfig);
     const protectedAccountKey = await this.protectedAccountKey(groupAccountKey);
@@ -142,24 +143,32 @@ export class MultiSig {
     const instructionData = new InstructionData(data);
     const buffer = serialize(schema, instructionData);
 
-    return new TransactionInstruction({
-      keys: [
-        {pubkey: signerAccountKey, isSigner: true, isWritable: true},
-        {pubkey: groupAccountKey, isSigner: false, isWritable: true},
-        {pubkey: proposalKey, isSigner: false, isWritable: true},
-        {pubkey: SystemProgram.programId, isSigner: false, isWritable: false},
-        {
-          pubkey: new PublicKey(data.instruction.program_id),
-          isSigner: false,
-          isWritable: false,
-        },
-        ...data.instruction.accounts.map((account: ProposedAccountMeta) => ({
+    const programIdAccounts = data.instructions.map(
+      (instruction: ProposedInstruction) => ({
+        pubkey: new PublicKey(instruction.program_id),
+        isSigner: false,
+        isWritable: false,
+      }),
+    );
+    const instructionAccounts: AccountMeta[] = data.instructions.flatMap(
+      (instruction: ProposedInstruction) =>
+        instruction.accounts.map((account: ProposedAccountMeta) => ({
           pubkey: new PublicKey(account.pubkey),
           isSigner: protectedAccountKey.equals(new PublicKey(account.pubkey))
             ? false
             : account.is_signer,
           isWritable: account.is_writable,
         })),
+    );
+
+    return new TransactionInstruction({
+      keys: [
+        {pubkey: signerAccountKey, isSigner: true, isWritable: true},
+        {pubkey: groupAccountKey, isSigner: false, isWritable: true},
+        {pubkey: proposalKey, isSigner: false, isWritable: true},
+        {pubkey: SystemProgram.programId, isSigner: false, isWritable: false},
+        ...programIdAccounts,
+        ...instructionAccounts,
       ],
       programId: this.programId,
       data: Buffer.from(buffer),
@@ -177,25 +186,54 @@ export class MultiSig {
     const instructionData = new InstructionData(new ApproveInstruction());
     const buffer = serialize(schema, instructionData);
 
+    const programIdAccounts = proposalConfig.instructions.map(
+      (instruction: ProposedInstruction) => ({
+        pubkey: new PublicKey(instruction.program_id),
+        isSigner: false,
+        isWritable: false,
+      }),
+    );
+    const instructionAccounts: AccountMeta[] = proposalConfig.instructions.flatMap(
+      (instruction: ProposedInstruction) =>
+        instruction.accounts
+          .filter(
+            (account: ProposedAccountMeta) =>
+              !protectedAccountKey.equals(new PublicKey(account.pubkey)),
+          )
+          .map((account: ProposedAccountMeta) => ({
+            pubkey: new PublicKey(account.pubkey),
+            isSigner: account.is_signer,
+            isWritable: account.is_writable,
+          })),
+    );
+
     return new TransactionInstruction({
       keys: [
         {pubkey: signerAccountKey, isSigner: true, isWritable: true},
         {pubkey: groupAccountKey, isSigner: false, isWritable: true},
         {pubkey: proposalAccountKey, isSigner: false, isWritable: true},
-        {
-          pubkey: new PublicKey(proposalConfig.instruction.program_id),
-          isSigner: false,
-          isWritable: false,
-        },
-        ...proposalConfig.instruction.accounts.map(
-          (account: ProposedAccountMeta) => ({
-            pubkey: new PublicKey(account.pubkey),
-            isSigner: protectedAccountKey.equals(new PublicKey(account.pubkey))
-              ? false
-              : account.is_signer,
-            isWritable: account.is_writable,
-          }),
-        ),
+        {pubkey: protectedAccountKey, isSigner: false, isWritable: true},
+        ...programIdAccounts,
+        ...instructionAccounts,
+      ],
+      programId: this.programId,
+      data: Buffer.from(buffer),
+    });
+  }
+
+  closeProposal(
+    proposalAccountKey: PublicKey,
+    signerAccountKey: PublicKey,
+    destinationKey: PublicKey,
+  ): TransactionInstruction {
+    const instructionData = new InstructionData(new CloseProposalInstruction());
+    const buffer = serialize(schema, instructionData);
+
+    return new TransactionInstruction({
+      keys: [
+        {pubkey: signerAccountKey, isSigner: true, isWritable: true},
+        {pubkey: proposalAccountKey, isSigner: false, isWritable: true},
+        {pubkey: destinationKey, isSigner: false, isWritable: true},
       ],
       programId: this.programId,
       data: Buffer.from(buffer),
@@ -212,15 +250,15 @@ function byteArrayToWordArray(ba: Uint8Array): CryptoJS.lib.WordArray {
   return CryptoJS.lib.WordArray.create(wa, ba.length);
 }
 
-const PDA_TAG = {
+export const PDA_TAG = {
   group: Buffer.from([0]),
   proposal: Buffer.from([1]),
   protected: Buffer.from([2]),
 };
 
-const ACCOUNT_TYPE_TAG = {
-  group: 0,
-  proposal: 1,
+export const ACCOUNT_TYPE_TAG = {
+  group: 1,
+  proposal: 2,
 };
 
 function checkAccountType(data: Buffer, expected: number) {
@@ -239,4 +277,16 @@ function anyNonZero(buffer: Buffer): boolean {
     }
   }
   return false;
+}
+
+export function readVerifiedGroupAccountData(
+  info: AccountInfo<Buffer>,
+): GroupData {
+  return deserialize(schema, GroupData, info.data.slice(1)) as GroupData;
+}
+
+export function readVerifiedProposalAccountData(
+  info: AccountInfo<Buffer>,
+): ProposalData {
+  return deserialize(schema, ProposalData, info.data.slice(1)) as ProposalData;
 }

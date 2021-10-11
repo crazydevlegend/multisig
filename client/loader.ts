@@ -81,128 +81,67 @@ export class Loader {
     data: Buffer | Uint8Array | Array<number>,
   ): Promise<boolean> {
     const buffer = new Account();
-    console.log('buffer account', buffer.publicKey.toBase58());
-    console.log('authority account', authority.publicKey.toBase58());
-    // UpgradeableLoaderState::buffer_len(program_len) = 37 + program_len
-    const bufferSpace = 37 + data.length;
-    const balanceNeeded = await connection.getMinimumBalanceForRentExemption(
-      bufferSpace,
-    );
+    await initBuffer(connection, payer, authority, data, buffer);
 
-    const initTransaction = new Transaction()
-      .add(
-        SystemProgram.createAccount({
-          fromPubkey: payer.publicKey,
-          newAccountPubkey: buffer.publicKey,
-          lamports: balanceNeeded,
-          space: bufferSpace,
-          programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
-        }),
-      )
-      .add(
-        new TransactionInstruction({
-          keys: [
-            {pubkey: buffer.publicKey, isSigner: false, isWritable: true},
-            {pubkey: authority.publicKey, isSigner: false, isWritable: false},
-          ],
-          programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
-          data: encodeInstruction({InitializeBuffer: {}}),
-        }),
-      );
-    await sendAndConfirmTransaction(
-      connection,
-      initTransaction,
-      [payer, buffer],
-      {
-        commitment: 'confirmed',
+    await produceWriteTransactions(
+      authority,
+      data,
+      buffer,
+      async (transaction, offset) => {
+        await sendAndConfirmTransaction(
+          connection,
+          transaction,
+          [payer, authority],
+          {
+            commitment: 'confirmed',
+          },
+        );
+        console.log('write progress:', offset, '/', data.length);
       },
     );
-    console.log('program buffer initialized');
 
-    const chunkSize = Loader.chunkSize;
-    let offset = 0;
-    let array = data;
-    while (array.length > 0) {
-      const bytes = array.slice(0, Loader.chunkSize);
-      const transaction = new Transaction().add({
-        keys: [
-          {pubkey: buffer.publicKey, isSigner: false, isWritable: true},
-          {pubkey: authority.publicKey, isSigner: true, isWritable: false},
-        ],
-        programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
-        data: encodeInstruction({
-          Write: {
-            offset,
-            bytes,
-          },
-        }),
-      });
-      await sendAndConfirmTransaction(
-        connection,
-        transaction,
-        [payer, authority],
-        {
-          commitment: 'confirmed',
-        },
-      );
-      console.log('write progress:', offset, '/', data.length);
-
-      offset += chunkSize;
-      array = array.slice(chunkSize);
-    }
     console.log('buffer write complete');
 
-    const programSpace = 36; // UpgradeableLoaderState::program_len()
-    const programBalanceNeeded = await connection.getMinimumBalanceForRentExemption(
-      programSpace,
-    );
-    const [programDataKey, _nonce] = await PublicKey.findProgramAddress(
-      [program.publicKey.toBuffer()],
-      UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
-    );
+    await deployBuffer(connection, payer, program, authority, data, buffer);
 
-    const deployTransaction = new Transaction()
-      .add(
-        SystemProgram.createAccount({
-          fromPubkey: payer.publicKey,
-          newAccountPubkey: program.publicKey,
-          lamports: programBalanceNeeded,
-          space: programSpace,
-          programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
-        }),
-      )
-      .add(
-        new TransactionInstruction({
-          keys: [
-            {pubkey: payer.publicKey, isSigner: true, isWritable: true},
-            {pubkey: programDataKey, isSigner: false, isWritable: true},
-            {pubkey: program.publicKey, isSigner: false, isWritable: true},
-            {pubkey: buffer.publicKey, isSigner: false, isWritable: true},
+    return true;
+  }
 
-            {pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false},
-            {pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false},
-            {
-              pubkey: SystemProgram.programId,
-              isSigner: false,
-              isWritable: false,
-            },
-            {pubkey: authority.publicKey, isSigner: true, isWritable: false},
-          ],
-          programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
-          data: encodeInstruction({
-            DeployWithMaxDataLen: {max_data_len: data.length},
+  static async deployAsync(
+    connection: Connection,
+    payer: Signer,
+    program: Signer,
+    authority: Signer,
+    data: Buffer | Uint8Array | Array<number>,
+  ): Promise<boolean> {
+    const buffer = new Account();
+    await initBuffer(connection, payer, authority, data, buffer);
+
+    const signatures_promises: Promise<string>[] = [];
+    await produceWriteTransactions(
+      authority,
+      data,
+      buffer,
+      async (transaction, _offset) => {
+        signatures_promises.push(
+          connection.sendTransaction(transaction, [payer, authority], {
+            preflightCommitment: 'processed',
           }),
-        }),
-      );
-
-    await sendAndConfirmTransaction(
-      connection,
-      deployTransaction,
-      [payer, program, authority],
-      {
-        commitment: 'confirmed',
+        );
+        await Promise.resolve();
       },
     );
+
+    const signatures = await Promise.all(signatures_promises);
+    console.log('transactions were sent');
+    const confirmations = [];
+    for (const signature of signatures) {
+      confirmations.push(connection.confirmTransaction(signature, 'confirmed'));
+    }
+    await Promise.all(confirmations);
+    console.log('transactions were confirmed;buffer write complete');
+
+    await deployBuffer(connection, payer, program, authority, data, buffer);
 
     return true;
   }
@@ -252,4 +191,149 @@ export class Loader {
       data: encodeInstruction({SetAuthority: {}}),
     });
   }
+}
+
+async function initBuffer(
+  connection: Connection,
+  payer: Signer,
+  authority: Signer,
+  data: Buffer | Uint8Array | Array<number>,
+  bufferAccount: Account,
+): Promise<void> {
+  console.log('buffer account', bufferAccount.publicKey.toBase58());
+  console.log('authority account', authority.publicKey.toBase58());
+  // UpgradeableLoaderState::buffer_len(program_len) = 37 + program_len
+  const bufferSpace = 37 + data.length;
+  const balanceNeeded = await connection.getMinimumBalanceForRentExemption(
+    bufferSpace,
+  );
+
+  const initTransaction = new Transaction()
+    .add(
+      SystemProgram.createAccount({
+        fromPubkey: payer.publicKey,
+        newAccountPubkey: bufferAccount.publicKey,
+        lamports: balanceNeeded,
+        space: bufferSpace,
+        programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
+      }),
+    )
+    .add(
+      new TransactionInstruction({
+        keys: [
+          {pubkey: bufferAccount.publicKey, isSigner: false, isWritable: true},
+          {pubkey: authority.publicKey, isSigner: false, isWritable: false},
+        ],
+        programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
+        data: encodeInstruction({InitializeBuffer: {}}),
+      }),
+    );
+  await sendAndConfirmTransaction(
+    connection,
+    initTransaction,
+    [payer, bufferAccount],
+    {
+      commitment: 'confirmed',
+    },
+  );
+  console.log('program buffer initialized');
+}
+
+// transactionProcessor takes produced transactions and perform operations on them.
+// For example async deploy takes and stores then in an array,
+// while sync deploy awaits for confirmations on them serially.
+async function produceWriteTransactions(
+  authority: Signer,
+  data: Buffer | Uint8Array | Array<number>,
+  bufferAccount: Account,
+  transactionProcessor: (
+    transaction: Transaction,
+    offset: number,
+  ) => Promise<void>,
+): Promise<void> {
+  const chunkSize = Loader.chunkSize;
+  let offset = 0;
+  let array = data;
+  while (array.length > 0) {
+    const bytes = array.slice(0, Loader.chunkSize);
+    const transaction = new Transaction().add({
+      keys: [
+        {pubkey: bufferAccount.publicKey, isSigner: false, isWritable: true},
+        {pubkey: authority.publicKey, isSigner: true, isWritable: false},
+      ],
+      programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
+      data: encodeInstruction({
+        Write: {
+          offset,
+          bytes,
+        },
+      }),
+    });
+    await transactionProcessor(transaction, offset);
+
+    offset += chunkSize;
+    array = array.slice(chunkSize);
+  }
+  console.log('buffer write complete');
+}
+
+async function deployBuffer(
+  connection: Connection,
+  payer: Signer,
+  program: Signer,
+  authority: Signer,
+  data: Buffer | Uint8Array | Array<number>,
+  bufferAccount: Account,
+): Promise<void> {
+  const programSpace = 36; // UpgradeableLoaderState::program_len()
+  const programBalanceNeeded = await connection.getMinimumBalanceForRentExemption(
+    programSpace,
+  );
+  const [programDataKey, _nonce] = await PublicKey.findProgramAddress(
+    [program.publicKey.toBuffer()],
+    UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
+  );
+
+  const deployTransaction = new Transaction()
+    .add(
+      SystemProgram.createAccount({
+        fromPubkey: payer.publicKey,
+        newAccountPubkey: program.publicKey,
+        lamports: programBalanceNeeded,
+        space: programSpace,
+        programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
+      }),
+    )
+    .add(
+      new TransactionInstruction({
+        keys: [
+          {pubkey: payer.publicKey, isSigner: true, isWritable: true},
+          {pubkey: programDataKey, isSigner: false, isWritable: true},
+          {pubkey: program.publicKey, isSigner: false, isWritable: true},
+          {pubkey: bufferAccount.publicKey, isSigner: false, isWritable: true},
+
+          {pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false},
+          {pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false},
+          {
+            pubkey: SystemProgram.programId,
+            isSigner: false,
+            isWritable: false,
+          },
+          {pubkey: authority.publicKey, isSigner: true, isWritable: false},
+        ],
+        programId: UPGRADEABLE_BPF_LOADER_PROGRAM_ID,
+        data: encodeInstruction({
+          DeployWithMaxDataLen: {max_data_len: data.length * 3},
+        }),
+      }),
+    );
+
+  await sendAndConfirmTransaction(
+    connection,
+    deployTransaction,
+    [payer, program, authority],
+    {
+      commitment: 'confirmed',
+    },
+  );
 }

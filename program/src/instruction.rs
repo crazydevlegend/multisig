@@ -39,13 +39,15 @@ pub struct InitInstruction {
 ///                and invoked program_id (See [ProposalConfig](crate::state::ProposalConfig)).
 ///   3. `[]` System program account.
 ///   4. `[]` Proposed instruction program account.
-///   5. ..5+N `[]` N accounts needed for proposed instruction to succeed.
+///   5. ..5+N `[]` N accounts needed for proposed instructions to succeed.
 #[derive(Debug, BorshDeserialize, BorshSerialize)]
 pub struct ProposeInstruction {
     /// Instruction to be proposed.
-    pub instruction: ProposedInstruction,
+    pub instructions: Vec<ProposedInstruction>,
     /// Amount of lamports to fund the new proposal account.
     pub lamports: u64,
+    /// A salt that will make this proposal unique.
+    pub salt: u64
 }
 
 /// Approve already proposed instruction.
@@ -54,14 +56,24 @@ pub struct ProposeInstruction {
 ///   0. `[SIGNER, WRITE]` Approver account. Must be a member of the group.
 ///   1. `[WRITE]` Group account. TODO: Remove writable
 ///   2. `[WRITE]` Proposal account that holds instruction to be approved.
-///   3. `[]` Proposed instruction program account.
-///   4. ..4+N `[]` N accounts needed for proposed instruction to succeed.
+///   3. `[WRITE]` Protected group account. Used to transfer lamports back to if the proposal is closed.
+///   4. `[]` Proposed instruction program account.
+///   5. ..5+N `[]` N accounts needed for proposed instruction to succeed.
 #[derive(Debug, BorshDeserialize, BorshSerialize)]
 pub struct ApproveInstruction {} // TODO?: is this unit?
+
+/// Closes a proposal and transfers its lamports to a group's protected address.
+/// # Account references
+///   0. `[SIGNER, WRITE]` Closer account. Must be a member of the group. Must be the same one who created the proposal.
+///   2. `[WRITE]` Proposal account that holds instruction to be approved.
+///   3. `[WRITE]` Destination account. Will receive lamports that proposal account has.
+#[derive(Debug, BorshDeserialize, BorshSerialize)]
+pub struct CloseProposalInstruction {}
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub enum MultiSigInstruction {
     Init(InitInstruction),
     Propose(ProposeInstruction),
     Approve(ApproveInstruction),
+    CloseProposal(CloseProposalInstruction),
 }
