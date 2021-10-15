@@ -111,12 +111,18 @@ export class ProposedInstruction {
 }
 
 export class ProposeInstruction {
-  instruction: ProposedInstruction;
+  instructions: ProposedInstruction[];
   lamports: number;
+  salt: number;
 
-  constructor(instruction: ProposedInstruction, lamports: number) {
-    this.instruction = instruction;
+  constructor(
+    instructions: ProposedInstruction[],
+    lamports: number,
+    salt: number,
+  ) {
+    this.instructions = instructions;
     this.lamports = lamports;
+    this.salt = salt;
   }
 }
 
@@ -132,11 +138,15 @@ export class ProposalState {
 
 export class ProposalConfig {
   group: Uint8Array;
-  instruction: ProposedInstruction;
+  instructions: ProposedInstruction[];
+  author: Uint8Array;
+  salt: number;
 
   constructor(rec: Record<string, any>) {
     this.group = rec.group as Uint8Array;
-    this.instruction = rec.instruction as ProposedInstruction;
+    this.instructions = rec.instructions as ProposedInstruction[];
+    this.author = rec.author as Uint8Array;
+    this.salt = rec.salt as number;
   }
 }
 
@@ -151,14 +161,22 @@ export class ProposalData {
 }
 
 export class ApproveInstruction {}
+export class CloseProposalInstruction {}
 
 export class InstructionData {
   init?: InitInstruction;
   propose?: ProposeInstruction;
   approve?: ApproveInstruction;
+  closeProposal?: CloseProposalInstruction;
   variant: string;
 
-  constructor(instr: GroupData | ProposeInstruction | ApproveInstruction) {
+  constructor(
+    instr:
+      | GroupData
+      | ProposeInstruction
+      | ApproveInstruction
+      | CloseProposalInstruction,
+  ) {
     this.variant = '';
 
     if (instr instanceof InitInstruction) {
@@ -170,6 +188,9 @@ export class InstructionData {
     } else if (instr instanceof ApproveInstruction) {
       this.approve = instr;
       this.variant = 'approve';
+    } else if (instr instanceof CloseProposalInstruction) {
+      this.closeProposal = instr;
+      this.variant = 'closeProposal';
     } else {
       throw 'unknown type';
     }
@@ -219,6 +240,13 @@ export const schema: Schema = new Map([
     },
   ],
   [
+    CloseProposalInstruction,
+    {
+      kind: 'struct',
+      fields: [],
+    },
+  ],
+  [
     ProposedAccountMeta,
     {
       kind: 'struct',
@@ -256,7 +284,9 @@ export const schema: Schema = new Map([
       kind: 'struct',
       fields: [
         ['group', [32]],
-        ['instruction', ProposedInstruction],
+        ['instructions', [ProposedInstruction]],
+        ['author', [32]],
+        ['salt', 'u64'],
       ],
     },
   ],
@@ -304,8 +334,9 @@ export const schema: Schema = new Map([
     {
       kind: 'struct',
       fields: [
-        ['instruction', ProposedInstruction],
+        ['instructions', [ProposedInstruction]],
         ['lamports', 'u64'],
+        ['salt', 'u64'],
       ],
     },
   ],
@@ -318,6 +349,7 @@ export const schema: Schema = new Map([
         ['init', InitInstruction],
         ['propose', ProposeInstruction],
         ['approve', ApproveInstruction],
+        ['closeProposal', CloseProposalInstruction],
       ],
     },
   ],

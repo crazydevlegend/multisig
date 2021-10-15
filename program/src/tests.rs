@@ -157,12 +157,15 @@ fn do_propose(
         data: proposed_instruction.data,
     };
     let command = MultiSigInstruction::Propose(ProposeInstruction {
-        instruction: proposed_instruction.clone(),
+        instructions: vec![proposed_instruction.clone()],
         lamports: 100,
+        salt: 1
     });
     let proposal_config = ProposalConfig {
         group: group_account,
-        instruction: proposed_instruction.clone(),
+        instructions: vec![proposed_instruction.clone()],
+        author: signer,
+        salt: 1
     };
     let serialized = proposal_config.try_to_vec().unwrap();
     let hash = hash(&serialized);
@@ -366,20 +369,25 @@ fn do_approve(
         AccountMeta::new(signer, true),
         AccountMeta::new(group_acc, false),
         AccountMeta::new(proposal_acc, false),
-        AccountMeta::new_readonly(proposal_data.config.instruction.program_id, false),
+        AccountMeta::new_readonly(proposal_data.config.instructions[0].program_id, false),
     ];
-    accounts.extend(proposal_data.config.instruction.accounts.iter().map(|acc| {
-        let is_signer = if acc.pubkey == protected_account {
-            false
-        } else {
-            acc.is_signer
-        };
-        if acc.is_writable {
-            AccountMeta::new(acc.pubkey, is_signer)
-        } else {
-            AccountMeta::new_readonly(acc.pubkey, is_signer)
-        }
-    }));
+    accounts.extend(
+        proposal_data.config.instructions[0]
+            .accounts
+            .iter()
+            .map(|acc| {
+                let is_signer = if acc.pubkey == protected_account {
+                    false
+                } else {
+                    acc.is_signer
+                };
+                if acc.is_writable {
+                    AccountMeta::new(acc.pubkey, is_signer)
+                } else {
+                    AccountMeta::new_readonly(acc.pubkey, is_signer)
+                }
+            }),
+    );
     Transaction::new_with_payer(
         &[Instruction::new_with_borsh(program_id, &command, accounts)],
         Some(&payer),

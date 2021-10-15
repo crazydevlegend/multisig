@@ -10,8 +10,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 #[repr(u8)]
 pub enum AccountType {
-    Group = 0,
-    Proposal = 1,
+    Group = 1,
+    Proposal = 2,
 }
 
 impl From<AccountType> for u8 {
@@ -42,7 +42,9 @@ pub struct ProposalState {
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct ProposalConfig {
     pub group: Pubkey,
-    pub instruction: ProposedInstruction,
+    pub instructions: Vec<ProposedInstruction>,
+    pub author: Pubkey,
+    pub salt: u64
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]

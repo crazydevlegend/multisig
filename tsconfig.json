@@ -8,7 +8,10 @@
   "compilerOptions": {
     "declaration": true,
     "moduleResolution": "node",
-    "module": "es2015"
+    "module": "es2015",
+    "lib": [
+      "es2019"
+    ]
   },
   "include": ["client/**/*"],
   "exclude": ["node_modules"]
