@@ -33,6 +33,8 @@ Install npm dependencies:
 $ npm install
 ```
 
+Set `RPC_URL` environment variable to a desired Solana cluster (e.g. `https://api.devnet.solana.com`).
+
 ## Creating keypairs
 
 Create some accounts:
@@ -201,3 +203,13 @@ To set upgrade authority of a program to group's protected account you should ru
 
 To get upgrade authority back from the multisig you need to propose it: `npm run start propose -- delegate-upgrade-authority --group <GroupKey> --key ./keys/alpha.json --target <TargetKey> --new <NewAuthorityKey>`.
 Approve the proposal to finalize delegation.
+
+## Viewing of groups and proposals
+
+There is an ability to discover what groups account participates in.
+
+`npm run start view-groups -- --key <PathtoKeypair>`
+
+There is an ability to discover what proposals a group has. Note that the group address is not a group's protected address.
+
+`npm run start view-proposals -- --group <GroupAddress>`
