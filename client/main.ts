@@ -277,9 +277,13 @@ async function propose(context: Context): Promise<void> {
       if (commandArgs.lamports == null) {
         throw 'missing lamports';
       }
+      if (commandArgs.finalApprover == null) {
+        throw 'must specify the key that will be used to approve last';
+      }
       proposition = {
         kind: PropositionKind.Create,
         lamports: parseInt(commandArgs.lamports),
+        finalApproverKey: new PublicKey(commandArgs.finalApprover)
       };
       break;
     case 'transfer': {

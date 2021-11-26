@@ -154,9 +154,7 @@ export class MultiSig {
       (instruction: ProposedInstruction) =>
         instruction.accounts.map((account: ProposedAccountMeta) => ({
           pubkey: new PublicKey(account.pubkey),
-          isSigner: protectedAccountKey.equals(new PublicKey(account.pubkey))
-            ? false
-            : account.is_signer,
+          isSigner: false,
           isWritable: account.is_writable,
         })),
     );
@@ -202,7 +200,7 @@ export class MultiSig {
           )
           .map((account: ProposedAccountMeta) => ({
             pubkey: new PublicKey(account.pubkey),
-            isSigner: account.is_signer,
+            isSigner: false,
             isWritable: account.is_writable,
           })),
     );

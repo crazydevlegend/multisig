@@ -58,6 +58,7 @@ export type Proposition =
 export interface Create {
   kind: PropositionKind.Create;
   lamports: number;
+  finalApproverKey: PublicKey;
 }
 
 export interface Transfer {
@@ -128,7 +129,7 @@ export async function propose(
     case PropositionKind.Create:
       proposedInstructions = [
         SystemProgram.createAccount({
-          fromPubkey: signerAccount.publicKey,
+          fromPubkey: proposition.finalApproverKey,
           newAccountPubkey: protectedGroupAccount,
           lamports: proposition.lamports,
           space: 0,
@@ -267,7 +268,6 @@ export async function approve(
   const transaction = new Transaction().add(
     await multisig.approve(proposal, proposalData.config, signer.publicKey),
   );
-
   await sendAndConfirmTransaction(connection, transaction, [signer], {
     commitment: 'singleGossip',
     preflightCommitment: 'singleGossip',
